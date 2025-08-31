@@ -1,62 +1,75 @@
 import streamlit as st
 import pandas as pd
-from time import sleep
+from io import BytesIO
 
 st.set_page_config(page_title="ITP Activities Tracker", layout="wide")
 st.title("ITP Activities Tracker")
 
-# ------------------------------
-# 1. File upload
-# ------------------------------
-uploaded_file = st.file_uploader("Upload your ITP CSV file", type=["csv"])
+# ----------------------
+# Upload Excel File
+# ----------------------
+uploaded_file = st.file_uploader("Upload your Excel file (formatted as table)", type=["xlsx"])
+
 if uploaded_file is not None:
-    st.info("Processing file, please wait...")
+    try:
+        # Read Excel file
+        df = pd.read_excel(uploaded_file)
+        st.success("Excel file loaded successfully!")
 
-    # Read CSV
-    df = pd.read_csv(uploaded_file)
-    
-    # Clean column names
-    df.columns = df.columns.str.strip()
-    
-    # Check required columns
-    required_cols = ['Submittal Reference', 'ITP Reference', 'Checklist Reference', 'Activity No.', 'Activiy Description']
-    missing_cols = [c for c in required_cols if c not in df.columns]
-    if missing_cols:
-        st.error(f"Missing required columns: {missing_cols}")
-    else:
-        # ------------------------------
-        # 2. Group by ITP Reference
-        # ------------------------------
-        grouped = []
-        itp_refs = df['ITP Reference'].unique()
-        progress_bar = st.progress(0)
+        # Show the full table
+        st.subheader("Full Table")
+        st.dataframe(df)
 
-        for i, itp in enumerate(itp_refs):
-            temp = df[df['ITP Reference'] == itp]
-            activities = [f"{row['Activity No.']} - {row['Activiy Description']}" for idx, row in temp.iterrows()]
-            grouped.append({
-                'ITP Reference': itp,
-                'Submittal Reference': temp['Submittal Reference'].iloc[0],
-                'Checklist Reference': temp['Checklist Reference'].iloc[0],
-                'Activities': activities
-            })
-            progress_bar.progress((i + 1) / len(itp_refs))
+        # ----------------------
+        # Filter by ITP Reference
+        # ----------------------
+        if 'ITP Reference' not in df.columns:
+            st.error("Column 'ITP Reference' not found in the uploaded file.")
+        else:
+            itp_options = df['ITP Reference'].dropna().unique()
+            selected_itps = st.multiselect("Select ITP Reference(s) to filter", itp_options)
 
-        grouped_df = pd.DataFrame(grouped)
+            if selected_itps:
+                filtered_df = df[df['ITP Reference'].isin(selected_itps)]
+            else:
+                filtered_df = df.copy()
 
-        # ------------------------------
-        # 3. Display & download
-        # ------------------------------
-        st.subheader("Grouped ITP Activities")
-        st.dataframe(grouped_df)
+            # ----------------------
+            # Search in Activity Description
+            # ----------------------
+            if 'Activiy Description' in df.columns:
+                keywords = st.text_input("Search keywords in Activity Description (comma-separated)")
+                if keywords:
+                    keyword_list = [kw.strip().lower() for kw in keywords.split(",")]
+                    filtered_df = filtered_df[
+                        filtered_df['Activiy Description'].str.lower().apply(
+                            lambda x: any(kw in x for kw in keyword_list)
+                        )
+                    ]
 
-        # Download CSV
-        csv = grouped_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download grouped CSV",
-            data=csv,
-            file_name='ITP_grouped.csv',
-            mime='text/csv'
-        )
+            st.subheader("Filtered Results")
+            st.dataframe(filtered_df)
+
+            # ----------------------
+            # Download filtered results
+            # ----------------------
+            def to_excel(df):
+                output = BytesIO()
+                writer = pd.ExcelWriter(output, engine='xlsxwriter')
+                df.to_excel(writer, index=False, sheet_name='Filtered')
+                writer.save()
+                processed_data = output.getvalue()
+                return processed_data
+
+            excel_data = to_excel(filtered_df)
+            st.download_button(
+                label="Download Filtered Results as Excel",
+                data=excel_data,
+                file_name="filtered_itp_activities.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+    except Exception as e:
+        st.error(f"Error loading Excel file: {e}")
 else:
-    st.info("Please upload a CSV file to process.")
+    st.info("Please upload an Excel file to start.")
