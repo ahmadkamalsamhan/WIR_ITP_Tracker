@@ -1,111 +1,141 @@
+# ------------------------------
+# Ultra High-Performance WIR → ITP Tracker
+# Vectorized Matching with RapidFuzz cdist
+# ------------------------------
+
 import streamlit as st
 import pandas as pd
-from io import BytesIO
+from rapidfuzz import fuzz, cdist
+import io
+import numpy as np
 
-# ----------------------
-# Streamlit Page Config
-# ----------------------
-st.set_page_config(page_title="ITP Tracker", layout="wide")
-st.title("ITP Tracker - Multi File Upload")
+st.set_page_config(page_title="Ultra High-Performance WIR → ITP Tracker", layout="wide")
+st.title("WIR → ITP Activity Tracking Tool (Ultra High Performance)")
 
-# ----------------------
+# ------------------------------
 # Upload Excel Files
-# ----------------------
-st.subheader("Upload your Excel files")
+# ------------------------------
+st.header("Upload Excel Files")
+wir_file = st.file_uploader("Upload WIR Log", type=["xlsx"])
+itp_file = st.file_uploader("Upload ITP Log", type=["xlsx"])
+activity_file = st.file_uploader("Upload ITP Activities Log", type=["xlsx"])
 
-itp_file = st.file_uploader("Upload ITP Activities Log", type=["xlsx"])
-submittal_file = st.file_uploader("Upload Submittal Reference file", type=["xlsx"])
-checklist_file = st.file_uploader("Upload Checklist Reference file", type=["xlsx"])
+threshold = st.slider("Fuzzy Match Threshold (%)", 70, 100, 90)
 
-if itp_file and submittal_file and checklist_file:
-    try:
-        # Read Excel files
+# ------------------------------
+# Start Processing Button
+# ------------------------------
+if wir_file and itp_file and activity_file:
+    if st.button("Start Processing"):
+
+        st.info("Reading Excel files...")
+        wir_df = pd.read_excel(wir_file)
         itp_df = pd.read_excel(itp_file)
-        submittal_df = pd.read_excel(submittal_file)
-        checklist_df = pd.read_excel(checklist_file)
+        act_df = pd.read_excel(activity_file)
 
-        st.success("All files loaded successfully!")
+        # ------------------------------
+        # Clean Columns
+        # ------------------------------
+        def clean_columns(df):
+            df.columns = df.columns.str.strip()
+            df.columns = df.columns.str.replace('\n',' ').str.replace('\r',' ')
+            return df
 
-        st.subheader("ITP Activities Log")
-        st.dataframe(itp_df)
+        wir_df = clean_columns(wir_df)
+        itp_df = clean_columns(itp_df)
+        act_df = clean_columns(act_df)
 
-        st.subheader("Submittal Reference Table")
-        st.dataframe(submittal_df)
+        # ------------------------------
+        # Detect Columns
+        # ------------------------------
+        wir_pm_col = [c for c in wir_df.columns if 'PM Web Code' in c][0]
+        wir_title_col = [c for c in wir_df.columns if 'Title / Description2' in c][0]
 
-        st.subheader("Checklist Reference Table")
-        st.dataframe(checklist_df)
+        act_itp_col = [c for c in act_df.columns if 'ITP Reference' in c][0]
+        act_desc_col = [c for c in act_df.columns if 'Activiy Description' in c][0]
 
-        # ----------------------
-        # Filter by ITP Reference
-        # ----------------------
-        if 'ITP Reference' not in itp_df.columns:
-            st.error("Column 'ITP Reference' not found in ITP Activities Log.")
-        else:
-            itp_options = itp_df['ITP Reference'].dropna().unique()
-            selected_itps = st.multiselect("Select ITP Reference(s) to filter", itp_options)
+        # ------------------------------
+        # Normalize WIR
+        # ------------------------------
+        wir_df['PM Web Code'] = wir_df[wir_pm_col]
+        wir_df['PM_Code_Num'] = wir_df['PM Web Code'].map(lambda x: 1 if str(x).upper() in ['A','B'] else 2 if str(x).upper() in ['C','D'] else 0)
 
-            filtered_itp = itp_df.copy()
-            if selected_itps:
-                filtered_itp = filtered_itp[filtered_itp['ITP Reference'].isin(selected_itps)]
+        st.info("Expanding multi-activity WIR titles (vectorized)...")
+        wir_df['ActivitiesList'] = wir_df[wir_title_col].astype(str).str.split(r',|\+|/| and |&')
+        wir_exp_df = wir_df.explode('ActivitiesList').reset_index(drop=True)
+        wir_exp_df['ActivityNorm'] = wir_exp_df['ActivitiesList'].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
+        st.success(f"Expanded WIR activities: {len(wir_exp_df)} rows total")
 
-            # ----------------------
-            # Filter by Clause Number (optional)
-            # ----------------------
-            if 'Clause Number' in filtered_itp.columns:
-                clause_options = filtered_itp['Clause Number'].dropna().unique()
-                selected_clauses = st.multiselect("Select Clause Number(s) to filter", clause_options)
-                if selected_clauses:
-                    filtered_itp = filtered_itp[filtered_itp['Clause Number'].isin(selected_clauses)]
+        # ------------------------------
+        # Normalize ITP Activities
+        # ------------------------------
+        act_df['ITP_Ref_Norm'] = act_df[act_itp_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
+        act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
 
-            # ----------------------
-            # Search in Activity Description
-            # ----------------------
-            if 'Activiy Description' in filtered_itp.columns:
-                keywords = st.text_input("Search keywords in Activity Description (comma-separated)")
-                if keywords:
-                    keyword_list = [kw.strip().lower() for kw in keywords.split(",")]
-                    filtered_itp = filtered_itp[
-                        filtered_itp['Activiy Description'].str.lower().apply(
-                            lambda x: any(kw in x for kw in keyword_list)
-                        )
-                    ]
+        # ------------------------------
+        # Vectorized Matching using RapidFuzz cdist
+        # ------------------------------
+        st.info("Matching WIRs to ITP activities (vectorized)...")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-            st.subheader("Filtered ITP Activities")
-            st.dataframe(filtered_itp)
+        wir_list = wir_exp_df['ActivityNorm'].tolist()
+        wir_pm_list = wir_exp_df['PM_Code_Num'].tolist()
+        itp_list = act_df['ActivityDescNorm'].tolist()
 
-            # ----------------------
-            # Merge with Submittal and Checklist
-            # ----------------------
-            merge_df = filtered_itp.merge(
-                submittal_df, on='Submittal Reference', how='left'
-            ).merge(
-                checklist_df, on='Checklist Reference', how='left'
-            )
+        # Compute similarity matrix (all ITP vs all WIR)
+        sim_matrix = cdist(itp_list, wir_list, scorer=fuzz.ratio)
 
-            st.subheader("Merged Table (ITP + Submittal + Checklist)")
-            st.dataframe(merge_df)
+        # Best match per ITP
+        best_idx = np.argmax(sim_matrix, axis=1)
+        best_score = np.max(sim_matrix, axis=1)
+        pm_codes = [wir_pm_list[i] if s >= threshold else 0 for i,s in zip(best_idx, best_score)]
 
-            # ----------------------
-            # Download merged results
-            # ----------------------
-            def to_excel(df):
-                output = BytesIO()
-                writer = pd.ExcelWriter(output, engine='xlsxwriter')
-                df.to_excel(writer, index=False, sheet_name='Merged')
-                writer.save()
-                processed_data = output.getvalue()
-                return processed_data
+        # Build matches DataFrame
+        match_df = pd.DataFrame({
+            'ITP Reference': act_df[act_itp_col],
+            'Activity Description': act_df[act_desc_col],
+            'Status': pm_codes
+        })
 
-            excel_data = to_excel(merge_df)
-            st.download_button(
-                label="Download Filtered & Merged Results as Excel",
-                data=excel_data,
-                file_name="merged_itp_results.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        # Build audit DataFrame for low-confidence matches
+        audit_df = pd.DataFrame({
+            'ITP Reference': act_df[act_itp_col],
+            'Activity Description': act_df[act_desc_col],
+            'Best Match': [wir_exp_df['ActivityNorm'][i] for i in best_idx],
+            'Score': best_score
+        })
+        audit_df = audit_df[audit_df['Score'] < threshold]
 
-    except Exception as e:
-        st.error(f"Error loading Excel files: {e}")
+        progress_bar.progress(1.0)
+        status_text.text("Matching completed!")
 
-else:
-    st.info("Please upload all three Excel files to proceed.")
+        # ------------------------------
+        # Pivot Table
+        # ------------------------------
+        pivot_df = match_df.pivot_table(index='ITP Reference',
+                                        columns='Activity Description',
+                                        values='Status',
+                                        fill_value=0).reset_index()
+
+        st.subheader("Activity Completion Status Pivot Table")
+        st.dataframe(pivot_df)
+
+        # ------------------------------
+        # Excel Output with Audit Sheet
+        # ------------------------------
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            pivot_df.to_excel(writer, index=False, sheet_name='PivotedStatus')
+            if not audit_df.empty:
+                audit_df.to_excel(writer, index=False, sheet_name='Audit_LowConfidence')
+        output.seek(0)
+
+        st.download_button(
+            label="Download Excel",
+            data=output.getvalue(),
+            file_name="ITP_WIR_Activity_Status.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        st.success("Processing completed successfully!")
