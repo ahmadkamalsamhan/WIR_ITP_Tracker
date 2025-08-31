@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
+from io import BytesIO
 
 st.title("📊 ITP-WIR Matching Tool (Optimized & Fast)")
 
@@ -97,9 +98,16 @@ if itp_file and activity_file and wir_file:
         st.success("✅ ITP-WIR Matrix Generated!")
         st.dataframe(matrix)
 
+        # -------------------------------
+        # Download Excel
+        # -------------------------------
+        output = BytesIO()
+        matrix.to_excel(output, index=False, engine='openpyxl')
+        output.seek(0)
+
         st.download_button(
             label="📥 Download Matrix as Excel",
-            data=matrix.to_excel(index=False, engine='openpyxl'),
+            data=output,
             file_name="ITP_WIR_Matrix.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
