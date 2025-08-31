@@ -1,39 +1,62 @@
+import streamlit as st
 import pandas as pd
+from time import sleep
+
+st.set_page_config(page_title="ITP Activities Tracker", layout="wide")
+st.title("ITP Activities Tracker")
 
 # ------------------------------
-# 1. Load the CSV file
+# 1. File upload
 # ------------------------------
-file_path = "ITP_activities_log.csv"  # Replace with your actual CSV file path
-df = pd.read_csv(file_path)
+uploaded_file = st.file_uploader("Upload your ITP CSV file", type=["csv"])
+if uploaded_file is not None:
+    st.info("Processing file, please wait...")
 
-# Clean column names
-df.columns = df.columns.str.strip()
+    # Read CSV
+    df = pd.read_csv(uploaded_file)
+    
+    # Clean column names
+    df.columns = df.columns.str.strip()
+    
+    # Check required columns
+    required_cols = ['Submittal Reference', 'ITP Reference', 'Checklist Reference', 'Activity No.', 'Activiy Description']
+    missing_cols = [c for c in required_cols if c not in df.columns]
+    if missing_cols:
+        st.error(f"Missing required columns: {missing_cols}")
+    else:
+        # ------------------------------
+        # 2. Group by ITP Reference
+        # ------------------------------
+        grouped = []
+        itp_refs = df['ITP Reference'].unique()
+        progress_bar = st.progress(0)
 
-# ------------------------------
-# 2. Group by ITP Reference
-# ------------------------------
-grouped = df.groupby('ITP Reference').agg(
-    Submittal_Reference=('Submittal Reference', 'first'),
-    Checklist_Reference=('Checklist Reference', 'first'),
-    Activity_Nos=('Activity No.', lambda x: list(x)),
-    Activity_Descriptions=('Activiy Description', lambda x: list(x))
-).reset_index()
+        for i, itp in enumerate(itp_refs):
+            temp = df[df['ITP Reference'] == itp]
+            activities = [f"{row['Activity No.']} - {row['Activiy Description']}" for idx, row in temp.iterrows()]
+            grouped.append({
+                'ITP Reference': itp,
+                'Submittal Reference': temp['Submittal Reference'].iloc[0],
+                'Checklist Reference': temp['Checklist Reference'].iloc[0],
+                'Activities': activities
+            })
+            progress_bar.progress((i + 1) / len(itp_refs))
 
-# ------------------------------
-# 3. Optional: Combine Activity No. + Description in one string
-# ------------------------------
-grouped['Activities'] = grouped.apply(
-    lambda row: [f"{no} - {desc}" for no, desc in zip(row['Activity_Nos'], row['Activity_Descriptions'])],
-    axis=1
-)
+        grouped_df = pd.DataFrame(grouped)
 
-# Drop the separate columns if you just want the combined Activities column
-grouped = grouped.drop(columns=['Activity_Nos', 'Activity_Descriptions'])
+        # ------------------------------
+        # 3. Display & download
+        # ------------------------------
+        st.subheader("Grouped ITP Activities")
+        st.dataframe(grouped_df)
 
-# ------------------------------
-# 4. Save the grouped data to a new CSV
-# ------------------------------
-output_file = "ITP_grouped.csv"
-grouped.to_csv(output_file, index=False)
-
-print(f"Grouped ITP activities saved to {output_file}")
+        # Download CSV
+        csv = grouped_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download grouped CSV",
+            data=csv,
+            file_name='ITP_grouped.csv',
+            mime='text/csv'
+        )
+else:
+    st.info("Please upload a CSV file to process.")
