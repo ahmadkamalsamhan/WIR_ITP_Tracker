@@ -1,15 +1,11 @@
-# ------------------------------
-# WIR → ITP Tracker (Streamlit Cloud Ready)
-# ------------------------------
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 from difflib import SequenceMatcher
 import io
 
-st.set_page_config(page_title="WIR → ITP Tracker", layout="wide")
-st.title("WIR → ITP Activity Tracking Tool (Cloud Ready)")
+st.set_page_config(page_title="Ultra High-Performance WIR → ITP Tracker", layout="wide")
+st.title("WIR → ITP Activity Tracking Tool (Online Version)")
 
 # ------------------------------
 # Upload Excel Files
@@ -22,7 +18,7 @@ activity_file = st.file_uploader("Upload ITP Activities Log", type=["xlsx"])
 threshold = st.slider("Fuzzy Match Threshold (%)", 70, 100, 90)
 
 # ------------------------------
-# Start Processing Button
+# Start Processing
 # ------------------------------
 if wir_file and itp_file and activity_file:
     if st.button("Start Processing"):
@@ -71,7 +67,7 @@ if wir_file and itp_file and activity_file:
         act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
 
         # ------------------------------
-        # Fuzzy Matching using difflib
+        # Matching using difflib
         # ------------------------------
         st.info("Matching WIRs to ITP activities...")
         progress_bar = st.progress(0)
@@ -81,24 +77,24 @@ if wir_file and itp_file and activity_file:
         wir_pm_list = wir_exp_df['PM_Code_Num'].tolist()
         itp_list = act_df['ActivityDescNorm'].tolist()
 
-        best_matches = []
-        best_scores = []
-        pm_codes = []
+        best_idx = []
+        best_score = []
 
         total = len(itp_list)
-        for idx, itp in enumerate(itp_list):
-            scores = [SequenceMatcher(None, itp, wir).ratio()*100 for wir in wir_list]
-            max_idx = int(np.argmax(scores))
-            max_score = max(scores)
-            best_matches.append(wir_list[max_idx])
-            best_scores.append(max_score)
-            pm_codes.append(wir_pm_list[max_idx] if max_score >= threshold else 0)
-            progress_bar.progress((idx+1)/total)
+        for i in range(total):
+            scores = [SequenceMatcher(None, itp_list[i], w).ratio()*100 for w in wir_list]
+            idx = np.argmax(scores)
+            score = scores[idx]
+            best_idx.append(idx)
+            best_score.append(score)
+            if i % max(1, total // 100) == 0:
+                progress_bar.progress(i/total)
+                status_text.text(f"Processing {i}/{total} ITP activities...")
 
-        status_text.text("Matching completed!")
+        pm_codes = [wir_pm_list[i] if s >= threshold else 0 for i,s in zip(best_idx, best_score)]
 
         # ------------------------------
-        # Build DataFrames
+        # Build Match & Audit DataFrames
         # ------------------------------
         match_df = pd.DataFrame({
             'ITP Reference': act_df[act_itp_col],
@@ -109,10 +105,12 @@ if wir_file and itp_file and activity_file:
         audit_df = pd.DataFrame({
             'ITP Reference': act_df[act_itp_col],
             'Activity Description': act_df[act_desc_col],
-            'Best Match': best_matches,
-            'Score': best_scores
+            'Best Match': [wir_exp_df['ActivityNorm'][i] for i in best_idx],
+            'Score': best_score
         })
         audit_df = audit_df[audit_df['Score'] < threshold]
+
+        st.success("Matching completed!")
 
         # ------------------------------
         # Pivot Table
