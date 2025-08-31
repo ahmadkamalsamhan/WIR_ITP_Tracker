@@ -1,16 +1,16 @@
 # ------------------------------
-# Ultra-High Performance WIR → ITP Tracker
+# High-Performance WIR → ITP Tracker
+# Using RapidFuzz process.extractOne (no cdist)
 # ------------------------------
 
 import streamlit as st
 import pandas as pd
-from rapidfuzz import fuzz, cdist
+from rapidfuzz import fuzz, process
 import re
 import io
-import numpy as np
 
-st.set_page_config(page_title="Ultra High-Performance WIR → ITP Tracker", layout="wide")
-st.title("WIR → ITP Activity Tracking Tool (Ultra High Performance)")
+st.set_page_config(page_title="High-Performance WIR → ITP Tracker", layout="wide")
+st.title("WIR → ITP Activity Tracking Tool (Optimized)")
 
 # ------------------------------
 # Upload Excel Files
@@ -46,7 +46,7 @@ if wir_file and itp_file and activity_file:
         act_df = clean_columns(act_df)
 
         # ------------------------------
-        # Detect Columns
+        # Detect Required Columns
         # ------------------------------
         wir_pm_col = [c for c in wir_df.columns if 'PM Web Code' in c][0]
         wir_title_col = [c for c in wir_df.columns if 'Title / Description2' in c][0]
@@ -73,40 +73,56 @@ if wir_file and itp_file and activity_file:
         act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
 
         # ------------------------------
-        # Matching using RapidFuzz cdist (vectorized)
+        # Matching using RapidFuzz process.extractOne
         # ------------------------------
-        st.info("Matching WIRs to ITP activities (vectorized)...")
+        st.info("Matching WIRs to ITP activities (optimized)...")
         progress_bar = st.progress(0)
         status_text = st.empty()
 
         wir_list = wir_exp_df['ActivityNorm'].tolist()
         wir_pm_list = wir_exp_df['PM_Code_Num'].tolist()
-        itp_activities = act_df['ActivityDescNorm'].tolist()
 
-        # Compute similarity matrix
-        sim_matrix = cdist(itp_activities, wir_list, scorer=fuzz.ratio)
-        best_idx = np.argmax(sim_matrix, axis=1)
-        best_score = np.max(sim_matrix, axis=1)
-        pm_codes = [wir_pm_list[i] if s >= threshold else 0 for i,s in zip(best_idx, best_score)]
+        matches = []
+        audit = []
 
-        # Build matches
-        match_df = pd.DataFrame({
-            'ITP Reference': act_df[act_itp_col],
-            'Activity Description': act_df[act_desc_col],
-            'Status': pm_codes
-        })
+        for idx, row in act_df.iterrows():
+            act_norm = row['ActivityDescNorm']
+            best_match = process.extractOne(act_norm, wir_list, scorer=fuzz.ratio)
+            if best_match:
+                match_text, score, match_idx = best_match
+                pm_code = wir_pm_list[match_idx] if score >= threshold else 0
+                if score < threshold:
+                    audit.append({
+                        'ITP Reference': row[act_itp_col],
+                        'Activity Description': row[act_desc_col],
+                        'Best Match': match_text,
+                        'Score': score
+                    })
+            else:
+                pm_code = 0
+                audit.append({
+                    'ITP Reference': row[act_itp_col],
+                    'Activity Description': row[act_desc_col],
+                    'Best Match': None,
+                    'Score': 0
+                })
 
-        # Build audit for low-confidence matches
-        audit_df = pd.DataFrame({
-            'ITP Reference': act_df[act_itp_col],
-            'Activity Description': act_df[act_desc_col],
-            'Best Match': [wir_exp_df['ActivityNorm'][i] for i in best_idx],
-            'Score': best_score
-        })
-        audit_df = audit_df[audit_df['Score'] < threshold]
+            matches.append({
+                'ITP Reference': row[act_itp_col],
+                'Activity Description': row[act_desc_col],
+                'Status': pm_code
+            })
+
+            # update progress every 500 rows to avoid hanging
+            if idx % 500 == 0:
+                progress_bar.progress(idx / len(act_df))
+                status_text.text(f"Processed {idx}/{len(act_df)} activities...")
 
         progress_bar.progress(1.0)
         status_text.text("Matching completed!")
+
+        match_df = pd.DataFrame(matches)
+        audit_df = pd.DataFrame(audit)
 
         # ------------------------------
         # Pivot Table
