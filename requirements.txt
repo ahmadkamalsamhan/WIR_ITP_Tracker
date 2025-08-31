@@ -1,5 +1,5 @@
 streamlit
 pandas
 numpy
-rapidfuzz
+rapidfuzz==3.9.6
 openpyxl
