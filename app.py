@@ -1,93 +1,105 @@
 import streamlit as st
 import pandas as pd
-from rapidfuzz import fuzz, process
+import numpy as np
+from rapidfuzz import fuzz
+import io
 
-st.set_page_config(page_title="WIR-ITP Tracker", layout="wide")
+st.set_page_config(page_title="WIR → ITP Tracker", layout="wide")
+st.title("WIR → ITP Activity Tracker")
 
-st.title("📊 WIR ↔ ITP Tracker")
+# -------------------------
+# Upload Files
+# -------------------------
+wir_file = st.file_uploader("Upload WIR Log (.xlsx)", type=["xlsx"])
+itp_file = st.file_uploader("Upload ITP Log (.xlsx)", type=["xlsx"])
+activity_file = st.file_uploader("Upload ITP Activities Log (.xlsx)", type=["xlsx"])
 
-# ---------------------------
-# File Upload
-# ---------------------------
-st.sidebar.header("📂 Upload Excel Files")
-itp_activities_file = st.sidebar.file_uploader("Upload ITP Activities Log", type=["xlsx"])
-itp_log_file = st.sidebar.file_uploader("Upload ITP Log", type=["xlsx"])
-wir_file = st.sidebar.file_uploader("Upload WIR Log", type=["xlsx"])
+threshold = st.slider("Fuzzy Match Threshold (%)", 50, 100, 80)
 
-if itp_activities_file and itp_log_file and wir_file:
-    st.info("📖 Reading Excel files...")
+if wir_file and itp_file and activity_file:
+    if st.button("Start Processing"):
+        st.info("Reading Excel files...")
+        wir_df = pd.read_excel(wir_file)
+        itp_df = pd.read_excel(itp_file)
+        act_df = pd.read_excel(activity_file)
 
-    itp_df = pd.read_excel(itp_activities_file)
-    itp_log_df = pd.read_excel(itp_log_file)
-    wir_df = pd.read_excel(wir_file)
+        # -------------------------
+        # Clean column names
+        # -------------------------
+        def clean_columns(df):
+            df.columns = df.columns.str.strip().str.replace('\n',' ').str.replace('\r',' ')
+            return df
 
-    # ---------------------------
-    # Expand WIR activities
-    # ---------------------------
-    st.write("🔄 Expanding multi-activity WIR rows...")
-    wir_rows = []
-    total_rows = len(wir_df)
-    progress = st.progress(0, text="Starting WIR expansion...")
+        wir_df = clean_columns(wir_df)
+        itp_df = clean_columns(itp_df)
+        act_df = clean_columns(act_df)
 
-    for idx, (_, row) in enumerate(wir_df.iterrows(), 1):
-        activities = str(row.get("Title / Description", "")).split(",")
-        for act in activities:
-            new_row = row.copy()
-            new_row["Activity"] = act.strip()
-            wir_rows.append(new_row)
+        wir_col = [c for c in wir_df.columns if 'Title / Description2' in c][0]
+        itp_col = [c for c in itp_df.columns if 'Title / Description' in c][0]
+        act_itp_col = [c for c in act_df.columns if 'ITP Reference' in c][0]
+        act_desc_col = [c for c in act_df.columns if 'Activiy Description' in c][0]
 
-        if idx % 100 == 0 or idx == total_rows:
-            progress.progress(idx / total_rows, text=f"Processed {idx}/{total_rows} WIR rows")
+        # -------------------------
+        # Normalize
+        # -------------------------
+        wir_df['WIR_Norm'] = wir_df[wir_col].astype(str).str.upper().str.replace("-", "").str.replace(" ", "")
+        itp_df['ITP_Norm'] = itp_df[itp_col].astype(str).str.upper().str.replace("-", "").str.replace(" ", "")
+        act_df['ITP_Ref_Norm'] = act_df[act_itp_col].astype(str).str.upper().str.replace("-", "").str.replace(" ", "")
+        act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.replace("-", "").str.replace(" ", "")
 
-    wir_expanded = pd.DataFrame(wir_rows)
-    st.success(f"✅ Expanded WIR activities: {len(wir_expanded)} rows total")
+        # -------------------------
+        # Matching WIR → ITP
+        # -------------------------
+        st.info("Matching WIRs to ITPs...")
+        progress_bar = st.progress(0)
+        status_text = st.empty()
 
-    # ---------------------------
-    # Matching WIRs to ITP
-    # ---------------------------
-    st.write("🔍 Matching WIR activities to ITP activities...")
-    results = []
-    total_activities = len(itp_df)
-    match_progress = st.progress(0, text="Starting matching...")
+        results = []
 
-    itp_activities = itp_df["Activiy Description"].astype(str).tolist()
+        total_wir = len(wir_df)
+        for idx, wir_row in wir_df.iterrows():
+            best_match_score = 0
+            best_itp_idx = None
+            for jdx, itp_row in itp_df.iterrows():
+                score = fuzz.ratio(wir_row['WIR_Norm'], itp_row['ITP_Norm'])
+                if score > best_match_score:
+                    best_match_score = score
+                    best_itp_idx = jdx
+            if best_match_score >= threshold:
+                matched_itp = itp_df.loc[best_itp_idx, itp_col]
+                # check activities selected
+                activities = act_df[act_df['ITP_Ref_Norm'] == str(itp_df.loc[best_itp_idx, itp_col]).upper().replace("-", "").replace(" ", "")]
+                activities_list = activities[act_desc_col].tolist()
+            else:
+                matched_itp = None
+                activities_list = []
+            results.append({
+                'WIR_Title': wir_row[wir_col],
+                'Matched_ITP': matched_itp,
+                'ITP_Activities': ", ".join(activities_list),
+                'Score': best_match_score
+            })
+            progress_bar.progress((idx + 1) / total_wir)
+            status_text.text(f"Processed {idx + 1}/{total_wir} WIR rows")
 
-    for idx, (_, wir_row) in enumerate(wir_expanded.iterrows(), 1):
-        wir_activity = str(wir_row.get("Activity", ""))
-        best_matches = process.extract(
-            wir_activity,
-            itp_activities,
-            scorer=fuzz.token_sort_ratio,
-            limit=3  # get top 3 matches
+        result_df = pd.DataFrame(results)
+
+        st.subheader("Matched Results")
+        st.dataframe(result_df)
+
+        # -------------------------
+        # Save to Excel
+        # -------------------------
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            result_df.to_excel(writer, index=False, sheet_name='MatchedResults')
+        output.seek(0)
+
+        st.download_button(
+            label="Download Excel",
+            data=output.getvalue(),
+            file_name="WIR_ITP_Matched.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        for match_text, score, match_idx in best_matches:
-            result_row = wir_row.copy()
-            result_row["Matched ITP Activity"] = match_text
-            result_row["Score"] = score
-            results.append(result_row)
-
-        if idx % 500 == 0 or idx == len(wir_expanded):
-            match_progress.progress(idx / len(wir_expanded), text=f"Processed {idx}/{len(wir_expanded)} WIR activities")
-
-    final_df = pd.DataFrame(results)
-
-    st.success("✅ Matching completed!")
-
-    # ---------------------------
-    # Download
-    # ---------------------------
-    st.write("📥 Download Results")
-    @st.cache_data
-    def convert_df(df):
-        return df.to_excel(index=False, engine="openpyxl")
-
-    st.download_button(
-        label="💾 Download Excel File",
-        data=convert_df(final_df),
-        file_name="wir_itp_matches.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-else:
-    st.warning("⬅️ Please upload all three Excel files to start.")
+        st.success("Processing completed!")
