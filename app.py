@@ -1,11 +1,15 @@
+# ------------------------------
+# Ultra High-Performance WIR → ITP Tracker
+# ------------------------------
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-from difflib import SequenceMatcher
-import io
+from rapidfuzz import fuzz, process
+from io import BytesIO
 
 st.set_page_config(page_title="Ultra High-Performance WIR → ITP Tracker", layout="wide")
-st.title("WIR → ITP Activity Tracking Tool (Online Version)")
+st.title("WIR → ITP Activity Tracking Tool (Ultra High Performance)")
 
 # ------------------------------
 # Upload Excel Files
@@ -18,10 +22,11 @@ activity_file = st.file_uploader("Upload ITP Activities Log", type=["xlsx"])
 threshold = st.slider("Fuzzy Match Threshold (%)", 70, 100, 90)
 
 # ------------------------------
-# Start Processing
+# Start Processing Button
 # ------------------------------
 if wir_file and itp_file and activity_file:
     if st.button("Start Processing"):
+
         st.info("Reading Excel files...")
         wir_df = pd.read_excel(wir_file)
         itp_df = pd.read_excel(itp_file)
@@ -67,7 +72,7 @@ if wir_file and itp_file and activity_file:
         act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
 
         # ------------------------------
-        # Matching using difflib
+        # Matching with Progress
         # ------------------------------
         st.info("Matching WIRs to ITP activities...")
         progress_bar = st.progress(0)
@@ -80,21 +85,27 @@ if wir_file and itp_file and activity_file:
         best_idx = []
         best_score = []
 
-        total = len(itp_list)
-        for i in range(total):
-            scores = [SequenceMatcher(None, itp_list[i], w).ratio()*100 for w in wir_list]
-            idx = np.argmax(scores)
-            score = scores[idx]
-            best_idx.append(idx)
-            best_score.append(score)
-            if i % max(1, total // 100) == 0:
-                progress_bar.progress(i/total)
-                status_text.text(f"Processing {i}/{total} ITP activities...")
+        total_itp = len(itp_list)
+        chunk_size = 50  # adjust for memory/performance
+
+        for i in range(0, total_itp, chunk_size):
+            chunk = itp_list[i:i+chunk_size]
+            # Compute matches for chunk
+            for activity in chunk:
+                score_list = [fuzz.ratio(activity, w) for w in wir_list]
+                idx = int(np.argmax(score_list))
+                score = max(score_list)
+                best_idx.append(idx)
+                best_score.append(score)
+            progress_bar.progress(min((i+chunk_size)/total_itp,1.0))
+            status_text.text(f"Processing {min(i+chunk_size,total_itp)}/{total_itp} ITP activities...")
 
         pm_codes = [wir_pm_list[i] if s >= threshold else 0 for i,s in zip(best_idx, best_score)]
+        status_text.text("Matching completed!")
+        progress_bar.progress(1.0)
 
         # ------------------------------
-        # Build Match & Audit DataFrames
+        # Build DataFrames
         # ------------------------------
         match_df = pd.DataFrame({
             'ITP Reference': act_df[act_itp_col],
@@ -110,8 +121,6 @@ if wir_file and itp_file and activity_file:
         })
         audit_df = audit_df[audit_df['Score'] < threshold]
 
-        st.success("Matching completed!")
-
         # ------------------------------
         # Pivot Table
         # ------------------------------
@@ -124,9 +133,9 @@ if wir_file and itp_file and activity_file:
         st.dataframe(pivot_df)
 
         # ------------------------------
-        # Excel Output
+        # Excel Output with Audit Sheet
         # ------------------------------
-        output = io.BytesIO()
+        output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             pivot_df.to_excel(writer, index=False, sheet_name='PivotedStatus')
             if not audit_df.empty:
