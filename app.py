@@ -13,7 +13,7 @@ def load_model():
 model = load_model()
 
 # -------------------------------
-# Preprocessing Function
+# Preprocessing
 # -------------------------------
 def preprocess_text(text):
     if pd.isna(text):
@@ -47,7 +47,7 @@ def match_activity_to_wir(activity, candidate_wirs):
     return best_match
 
 # -------------------------------
-# Assign Status Code
+# Assign status
 # -------------------------------
 def assign_status(wir):
     if wir is None or pd.isna(wir.get('PM Web Code')):
@@ -63,11 +63,10 @@ def assign_status(wir):
 # -------------------------------
 # Streamlit UI
 # -------------------------------
-st.title("📊 ITP-WIR Matching Tool")
+st.title("📊 ITP-WIR Matching Tool (Online)")
 
 st.write("Upload your Excel files for ITP Log, ITP Activities, and Document Control Log (WIR)")
 
-# Upload files
 itp_file = st.file_uploader("Upload ITP Log", type=["xlsx"])
 activity_file = st.file_uploader("Upload ITP Activities Log", type=["xlsx"])
 wir_file = st.file_uploader("Upload Document Control Log (WIR)", type=["xlsx"])
@@ -79,19 +78,17 @@ if itp_file and activity_file and wir_file:
 
     st.success("✅ Files uploaded successfully!")
 
-    # Unique activities for columns
     unique_activities = activity_log['Activity Description'].dropna().unique().tolist()
     itp_nos = itp_log['DocumentNo.'].unique()
     matrix = pd.DataFrame(0, index=itp_nos, columns=unique_activities)
 
     progress = st.progress(0)
     total = len(itp_nos)
-    
+
     for i, itp_no in enumerate(itp_nos):
         itp_title = itp_log.loc[itp_log['DocumentNo.']==itp_no, 'Title / Description'].values[0]
         activities = activity_log.loc[activity_log['ITP Reference']==itp_no]
-
-        candidate_wirs = wir_log  # optionally filter by Function here
+        candidate_wirs = wir_log  # optionally filter by Function
 
         for _, activity_row in activities.iterrows():
             activity_desc = activity_row['Activity Description']
@@ -104,12 +101,11 @@ if itp_file and activity_file and wir_file:
     matrix.reset_index(inplace=True)
     matrix.rename(columns={'index':'ITP No.'}, inplace=True)
 
-    st.success("✅ ITP-WIR matrix generated successfully!")
+    st.success("✅ ITP-WIR matrix generated!")
     st.dataframe(matrix)
 
-    # Download button
     st.download_button(
-        label="📥 Download Matrix as Excel",
+        label="📥 Download Excel Matrix",
         data=matrix.to_excel(index=False, engine='openpyxl'),
         file_name="ITP_WIR_Matrix.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
