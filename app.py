@@ -8,6 +8,7 @@ import pandas as pd
 from rapidfuzz import fuzz, cdist
 import io
 import numpy as np
+from rapidfuzz import fuzz, cdist
 
 st.set_page_config(page_title="Ultra High-Performance WIR → ITP Tracker", layout="wide")
 st.title("WIR → ITP Activity Tracking Tool (Ultra High Performance)")
