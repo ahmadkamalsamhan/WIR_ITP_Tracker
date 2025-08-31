@@ -1,149 +1,56 @@
-# ------------------------------
-# Ultra High-Performance WIR → ITP Tracker (CSV)
-# ------------------------------
-
 import streamlit as st
 import pandas as pd
 import numpy as np
-from rapidfuzz import fuzz, cdist
-import io
+from rapidfuzz import fuzz, process
 
-# ------------------------------
-# Streamlit Setup
-# ------------------------------
-st.set_page_config(page_title="Ultra High-Performance WIR → ITP Tracker", layout="wide")
-st.title("WIR → ITP Activity Tracking Tool (Ultra High Performance)")
+st.set_page_config(page_title="WIR & ITP Tracker", layout="wide")
 
-# ------------------------------
-# Upload CSV Files
-# ------------------------------
-st.header("Upload CSV Files")
-wir_file = st.file_uploader("Upload WIR Log", type=["csv"])
-itp_file = st.file_uploader("Upload ITP Log", type=["csv"])
-activity_file = st.file_uploader("Upload ITP Activities Log", type=["csv"])
+st.title("📊 WIR & ITP Tracker")
 
-threshold = st.slider("Fuzzy Match Threshold (%)", 70, 100, 90)
+# File uploader
+st.sidebar.header("Upload your files (CSV/Excel)")
+itp_activities_file = st.sidebar.file_uploader("Upload ITP Activities", type=["csv", "xlsx"])
+itp_log_file = st.sidebar.file_uploader("Upload ITP Log", type=["csv", "xlsx"])
+wir_log_file = st.sidebar.file_uploader("Upload WIR Log", type=["csv", "xlsx"])
 
-# ------------------------------
-# Start Processing Button
-# ------------------------------
-if wir_file and itp_file and activity_file:
-    if st.button("Start Processing"):
+progress = st.empty()
 
-        st.info("Reading CSV files...")
-        wir_df = pd.read_csv(wir_file)
-        itp_df = pd.read_csv(itp_file)
-        act_df = pd.read_csv(activity_file)
+if st.sidebar.button("🚀 Start Processing"):
+    if not (itp_activities_file and itp_log_file and wir_log_file):
+        st.error("Please upload all 3 files!")
+    else:
+        try:
+            # Read files
+            def read_file(file):
+                if file.name.endswith(".csv"):
+                    return pd.read_csv(file)
+                return pd.read_excel(file)
 
-        # ------------------------------
-        # Clean Columns
-        # ------------------------------
-        def clean_columns(df):
-            df.columns = df.columns.str.strip()
-            df.columns = df.columns.str.replace('\n',' ').str.replace('\r',' ')
-            return df
+            st.info("Reading Excel/CSV files...")
+            itp_activities = read_file(itp_activities_file)
+            itp_log = read_file(itp_log_file)
+            wir_log = read_file(wir_log_file)
 
-        wir_df = clean_columns(wir_df)
-        itp_df = clean_columns(itp_df)
-        act_df = clean_columns(act_df)
+            st.success("Files loaded successfully ✅")
+            st.write("ITP Activities:", itp_activities.head())
+            st.write("ITP Log:", itp_log.head())
+            st.write("WIR Log:", wir_log.head())
 
-        # ------------------------------
-        # Detect Columns
-        # ------------------------------
-        wir_pm_col = [c for c in wir_df.columns if 'PM Web Code' in c][0]
-        wir_title_col = [c for c in wir_df.columns if 'Title / Description2' in c][0]
+            # Example fuzzy matching (demo)
+            st.info("Matching WIRs to ITP activities...")
 
-        act_itp_col = [c for c in act_df.columns if 'ITP Reference' in c][0]
-        act_desc_col = [c for c in act_df.columns if 'Activiy Description' in c][0]
+            matches = []
+            total = len(itp_activities)
+            for i, row in itp_activities.iterrows():
+                act = str(row.get("Activiy Description", ""))
+                best = process.extractOne(act, wir_log["Title / Description"].astype(str), scorer=fuzz.partial_ratio)
+                matches.append((act, best))
+                if i % 50 == 0:
+                    progress.progress(int(i / total * 100))
 
-        # ------------------------------
-        # Normalize WIR
-        # ------------------------------
-        wir_df['PM Web Code'] = wir_df[wir_pm_col]
-        wir_df['PM_Code_Num'] = wir_df['PM Web Code'].map(lambda x: 1 if str(x).upper() in ['A','B'] else 2 if str(x).upper() in ['C','D'] else 0)
+            st.success("✅ Matching completed!")
+            results = pd.DataFrame(matches, columns=["Activity", "Best Match"])
+            st.dataframe(results.head(20))
 
-        st.info("Expanding multi-activity WIR titles (vectorized)...")
-        wir_df['ActivitiesList'] = wir_df[wir_title_col].astype(str).str.split(r',|\+|/| and |&')
-        wir_exp_df = wir_df.explode('ActivitiesList').reset_index(drop=True)
-        wir_exp_df['ActivityNorm'] = wir_exp_df['ActivitiesList'].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
-        st.success(f"Expanded WIR activities: {len(wir_exp_df)} rows total")
-
-        # ------------------------------
-        # Normalize ITP Activities
-        # ------------------------------
-        act_df['ITP_Ref_Norm'] = act_df[act_itp_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
-        act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
-
-        # ------------------------------
-        # Vectorized Matching using RapidFuzz cdist
-        # ------------------------------
-        st.info("Matching WIRs to ITP activities (vectorized)...")
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        wir_list = wir_exp_df['ActivityNorm'].tolist()
-        wir_pm_list = wir_exp_df['PM_Code_Num'].tolist()
-        itp_list = act_df['ActivityDescNorm'].tolist()
-
-        # Compute similarity matrix (all ITP vs all WIR)
-        sim_matrix = cdist(itp_list, wir_list, scorer=fuzz.ratio)
-
-        # Best match per ITP
-        best_idx = np.argmax(sim_matrix, axis=1)
-        best_score = np.max(sim_matrix, axis=1)
-        pm_codes = [wir_pm_list[i] if s >= threshold else 0 for i,s in zip(best_idx, best_score)]
-
-        # Update progress bar
-        for i in range(len(itp_list)):
-            progress_bar.progress((i+1)/len(itp_list))
-            status_text.text(f"Processing {i+1}/{len(itp_list)} ITP activities...")
-
-        # ------------------------------
-        # Build matches DataFrame
-        # ------------------------------
-        match_df = pd.DataFrame({
-            'ITP Reference': act_df[act_itp_col],
-            'Activity Description': act_df[act_desc_col],
-            'Status': pm_codes
-        })
-
-        # Build audit DataFrame for low-confidence matches
-        audit_df = pd.DataFrame({
-            'ITP Reference': act_df[act_itp_col],
-            'Activity Description': act_df[act_desc_col],
-            'Best Match': [wir_exp_df['ActivityNorm'][i] for i in best_idx],
-            'Score': best_score
-        })
-        audit_df = audit_df[audit_df['Score'] < threshold]
-
-        st.success("Matching completed!")
-
-        # ------------------------------
-        # Pivot Table
-        # ------------------------------
-        pivot_df = match_df.pivot_table(index='ITP Reference',
-                                        columns='Activity Description',
-                                        values='Status',
-                                        fill_value=0).reset_index()
-
-        st.subheader("Activity Completion Status Pivot Table")
-        st.dataframe(pivot_df)
-
-        # ------------------------------
-        # Excel Output with Audit Sheet
-        # ------------------------------
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            pivot_df.to_excel(writer, index=False, sheet_name='PivotedStatus')
-            if not audit_df.empty:
-                audit_df.to_excel(writer, index=False, sheet_name='Audit_LowConfidence')
-        output.seek(0)
-
-        st.download_button(
-            label="Download Excel",
-            data=output.getvalue(),
-            file_name="ITP_WIR_Activity_Status.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-        st.success("Processing completed successfully!")
+        except Exception as e:
+            st.error(f"❌ Error: {e}")
