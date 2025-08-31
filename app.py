@@ -1,23 +1,23 @@
 # ------------------------------
-# Ultra High-Performance WIR → ITP Tracker
+# Ultra High-Performance WIR → ITP Tracker (CSV input)
 # ------------------------------
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-from rapidfuzz import fuzz, process
-from io import BytesIO
+from rapidfuzz import fuzz
+import io
 
 st.set_page_config(page_title="Ultra High-Performance WIR → ITP Tracker", layout="wide")
 st.title("WIR → ITP Activity Tracking Tool (Ultra High Performance)")
 
 # ------------------------------
-# Upload Excel Files
+# Upload CSV Files
 # ------------------------------
-st.header("Upload Excel Files")
-wir_file = st.file_uploader("Upload WIR Log", type=["xlsx"])
-itp_file = st.file_uploader("Upload ITP Log", type=["xlsx"])
-activity_file = st.file_uploader("Upload ITP Activities Log", type=["xlsx"])
+st.header("Upload CSV Files")
+wir_file = st.file_uploader("Upload WIR Log (CSV)", type=["csv"])
+itp_file = st.file_uploader("Upload ITP Log (CSV)", type=["csv"])
+activity_file = st.file_uploader("Upload ITP Activities Log (CSV)", type=["csv"])
 
 threshold = st.slider("Fuzzy Match Threshold (%)", 70, 100, 90)
 
@@ -27,10 +27,10 @@ threshold = st.slider("Fuzzy Match Threshold (%)", 70, 100, 90)
 if wir_file and itp_file and activity_file:
     if st.button("Start Processing"):
 
-        st.info("Reading Excel files...")
-        wir_df = pd.read_excel(wir_file)
-        itp_df = pd.read_excel(itp_file)
-        act_df = pd.read_excel(activity_file)
+        st.info("Reading CSV files...")
+        wir_df = pd.read_csv(wir_file)
+        itp_df = pd.read_csv(itp_file)
+        act_df = pd.read_csv(activity_file)
 
         # ------------------------------
         # Clean Columns
@@ -45,10 +45,10 @@ if wir_file and itp_file and activity_file:
         act_df = clean_columns(act_df)
 
         # ------------------------------
-        # Detect Columns
+        # Detect Columns (adjust if needed)
         # ------------------------------
         wir_pm_col = [c for c in wir_df.columns if 'PM Web Code' in c][0]
-        wir_title_col = [c for c in wir_df.columns if 'Title / Description2' in c][0]
+        wir_title_col = [c for c in wir_df.columns if 'Title' in c or 'Description' in c][0]
 
         act_itp_col = [c for c in act_df.columns if 'ITP Reference' in c][0]
         act_desc_col = [c for c in act_df.columns if 'Activiy Description' in c][0]
@@ -56,8 +56,7 @@ if wir_file and itp_file and activity_file:
         # ------------------------------
         # Normalize WIR
         # ------------------------------
-        wir_df['PM Web Code'] = wir_df[wir_pm_col]
-        wir_df['PM_Code_Num'] = wir_df['PM Web Code'].map(lambda x: 1 if str(x).upper() in ['A','B'] else 2 if str(x).upper() in ['C','D'] else 0)
+        wir_df['PM_Code_Num'] = wir_df[wir_pm_col].map(lambda x: 1 if str(x).upper() in ['A','B'] else 2 if str(x).upper() in ['C','D'] else 0)
 
         st.info("Expanding multi-activity WIR titles...")
         wir_df['ActivitiesList'] = wir_df[wir_title_col].astype(str).str.split(r',|\+|/| and |&')
@@ -72,7 +71,7 @@ if wir_file and itp_file and activity_file:
         act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
 
         # ------------------------------
-        # Matching with Progress
+        # Matching with progress bar
         # ------------------------------
         st.info("Matching WIRs to ITP activities...")
         progress_bar = st.progress(0)
@@ -80,46 +79,42 @@ if wir_file and itp_file and activity_file:
 
         wir_list = wir_exp_df['ActivityNorm'].tolist()
         wir_pm_list = wir_exp_df['PM_Code_Num'].tolist()
-        itp_list = act_df['ActivityDescNorm'].tolist()
 
-        best_idx = []
-        best_score = []
+        match_results = []
+        audit_results = []
 
-        total_itp = len(itp_list)
-        chunk_size = 50  # adjust for memory/performance
+        total = len(act_df)
+        for idx, row in act_df.iterrows():
+            act_name = row['ActivityDescNorm']
+            best_score = 0
+            best_idx = -1
+            for i, wir_name in enumerate(wir_list):
+                score = fuzz.ratio(act_name, wir_name)
+                if score > best_score:
+                    best_score = score
+                    best_idx = i
+            pm_code = wir_pm_list[best_idx] if best_score >= threshold else 0
+            match_results.append({
+                'ITP Reference': row[act_itp_col],
+                'Activity Description': row[act_desc_col],
+                'Status': pm_code
+            })
+            if best_score < threshold:
+                audit_results.append({
+                    'ITP Reference': row[act_itp_col],
+                    'Activity Description': row[act_desc_col],
+                    'Best Match': wir_list[best_idx],
+                    'Score': best_score
+                })
+            if idx % 50 == 0:
+                progress_bar.progress(idx/total)
+                status_text.text(f"Processing {idx}/{total} ITP activities...")
 
-        for i in range(0, total_itp, chunk_size):
-            chunk = itp_list[i:i+chunk_size]
-            # Compute matches for chunk
-            for activity in chunk:
-                score_list = [fuzz.ratio(activity, w) for w in wir_list]
-                idx = int(np.argmax(score_list))
-                score = max(score_list)
-                best_idx.append(idx)
-                best_score.append(score)
-            progress_bar.progress(min((i+chunk_size)/total_itp,1.0))
-            status_text.text(f"Processing {min(i+chunk_size,total_itp)}/{total_itp} ITP activities...")
-
-        pm_codes = [wir_pm_list[i] if s >= threshold else 0 for i,s in zip(best_idx, best_score)]
-        status_text.text("Matching completed!")
         progress_bar.progress(1.0)
+        status_text.text("Matching completed!")
 
-        # ------------------------------
-        # Build DataFrames
-        # ------------------------------
-        match_df = pd.DataFrame({
-            'ITP Reference': act_df[act_itp_col],
-            'Activity Description': act_df[act_desc_col],
-            'Status': pm_codes
-        })
-
-        audit_df = pd.DataFrame({
-            'ITP Reference': act_df[act_itp_col],
-            'Activity Description': act_df[act_desc_col],
-            'Best Match': [wir_exp_df['ActivityNorm'][i] for i in best_idx],
-            'Score': best_score
-        })
-        audit_df = audit_df[audit_df['Score'] < threshold]
+        match_df = pd.DataFrame(match_results)
+        audit_df = pd.DataFrame(audit_results)
 
         # ------------------------------
         # Pivot Table
@@ -135,7 +130,7 @@ if wir_file and itp_file and activity_file:
         # ------------------------------
         # Excel Output with Audit Sheet
         # ------------------------------
-        output = BytesIO()
+        output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             pivot_df.to_excel(writer, index=False, sheet_name='PivotedStatus')
             if not audit_df.empty:
