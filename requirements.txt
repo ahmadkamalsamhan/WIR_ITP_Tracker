@@ -1,10 +1,5 @@
 streamlit
 pandas
+numpy
 openpyxl
-nltk
 rapidfuzz
-sentence-transformers
-pymupdf
-pytesseract
-pdf2image
-tqdm
