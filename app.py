@@ -1,14 +1,15 @@
 # ------------------------------
-# WIR → ITP Tracker (Pure Python Fuzzy Matching)
+# WIR → ITP Tracker (Streamlit Cloud Ready)
 # ------------------------------
 
 import streamlit as st
 import pandas as pd
 import numpy as np
+from difflib import SequenceMatcher
 import io
 
 st.set_page_config(page_title="WIR → ITP Tracker", layout="wide")
-st.title("WIR → ITP Activity Tracking Tool (Pure Python)")
+st.title("WIR → ITP Activity Tracking Tool (Cloud Ready)")
 
 # ------------------------------
 # Upload Excel Files
@@ -25,7 +26,6 @@ threshold = st.slider("Fuzzy Match Threshold (%)", 70, 100, 90)
 # ------------------------------
 if wir_file and itp_file and activity_file:
     if st.button("Start Processing"):
-
         st.info("Reading Excel files...")
         wir_df = pd.read_excel(wir_file)
         itp_df = pd.read_excel(itp_file)
@@ -71,39 +71,34 @@ if wir_file and itp_file and activity_file:
         act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
 
         # ------------------------------
-        # Pure Python Fuzzy Matching
+        # Fuzzy Matching using difflib
         # ------------------------------
         st.info("Matching WIRs to ITP activities...")
         progress_bar = st.progress(0)
         status_text = st.empty()
 
-        def similarity_ratio(a, b):
-            # simple character-based ratio
-            a, b = str(a), str(b)
-            matches = sum(c1 == c2 for c1, c2 in zip(a, b))
-            max_len = max(len(a), len(b))
-            return int(matches / max_len * 100) if max_len > 0 else 0
-
         wir_list = wir_exp_df['ActivityNorm'].tolist()
         wir_pm_list = wir_exp_df['PM_Code_Num'].tolist()
         itp_list = act_df['ActivityDescNorm'].tolist()
 
-        best_idx = []
-        best_score = []
+        best_matches = []
+        best_scores = []
+        pm_codes = []
 
-        for idx_itp, itp_act in enumerate(itp_list):
-            scores = [similarity_ratio(itp_act, wir_act) for wir_act in wir_list]
-            best_score_val = max(scores)
-            best_idx_val = scores.index(best_score_val)
-            best_score.append(best_score_val)
-            best_idx.append(best_idx_val)
-            if idx_itp % 50 == 0:
-                progress_bar.progress(idx_itp / len(itp_list))
+        total = len(itp_list)
+        for idx, itp in enumerate(itp_list):
+            scores = [SequenceMatcher(None, itp, wir).ratio()*100 for wir in wir_list]
+            max_idx = int(np.argmax(scores))
+            max_score = max(scores)
+            best_matches.append(wir_list[max_idx])
+            best_scores.append(max_score)
+            pm_codes.append(wir_pm_list[max_idx] if max_score >= threshold else 0)
+            progress_bar.progress((idx+1)/total)
 
-        pm_codes = [wir_pm_list[i] if s >= threshold else 0 for i, s in zip(best_idx, best_score)]
+        status_text.text("Matching completed!")
 
         # ------------------------------
-        # Build Matches DataFrame
+        # Build DataFrames
         # ------------------------------
         match_df = pd.DataFrame({
             'ITP Reference': act_df[act_itp_col],
@@ -111,19 +106,13 @@ if wir_file and itp_file and activity_file:
             'Status': pm_codes
         })
 
-        # ------------------------------
-        # Audit for Low Confidence Matches
-        # ------------------------------
         audit_df = pd.DataFrame({
             'ITP Reference': act_df[act_itp_col],
             'Activity Description': act_df[act_desc_col],
-            'Best Match': [wir_exp_df['ActivityNorm'][i] for i in best_idx],
-            'Score': best_score
+            'Best Match': best_matches,
+            'Score': best_scores
         })
         audit_df = audit_df[audit_df['Score'] < threshold]
-
-        progress_bar.progress(1.0)
-        status_text.text("Matching completed!")
 
         # ------------------------------
         # Pivot Table
@@ -137,7 +126,7 @@ if wir_file and itp_file and activity_file:
         st.dataframe(pivot_df)
 
         # ------------------------------
-        # Excel Output with Audit Sheet
+        # Excel Output
         # ------------------------------
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
