@@ -1,105 +1,116 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from rapidfuzz import fuzz
-import io
+import re
+from sentence_transformers import SentenceTransformer, util
 
-st.set_page_config(page_title="WIR → ITP Tracker", layout="wide")
-st.title("WIR → ITP Activity Tracker")
+# -------------------------------
+# Load Sentence Transformer
+# -------------------------------
+@st.cache_resource
+def load_model():
+    return SentenceTransformer('all-MiniLM-L6-v2')
 
-# -------------------------
-# Upload Files
-# -------------------------
-wir_file = st.file_uploader("Upload WIR Log (.xlsx)", type=["xlsx"])
-itp_file = st.file_uploader("Upload ITP Log (.xlsx)", type=["xlsx"])
-activity_file = st.file_uploader("Upload ITP Activities Log (.xlsx)", type=["xlsx"])
+model = load_model()
 
-threshold = st.slider("Fuzzy Match Threshold (%)", 50, 100, 80)
+# -------------------------------
+# Preprocessing Function
+# -------------------------------
+def preprocess_text(text):
+    if pd.isna(text):
+        return []
+    text = str(text).lower()
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    return text.split()
 
-if wir_file and itp_file and activity_file:
-    if st.button("Start Processing"):
-        st.info("Reading Excel files...")
-        wir_df = pd.read_excel(wir_file)
-        itp_df = pd.read_excel(itp_file)
-        act_df = pd.read_excel(activity_file)
+# -------------------------------
+# Match activity to WIR
+# -------------------------------
+def match_activity_to_wir(activity, candidate_wirs):
+    best_match = None
+    max_score = -1
 
-        # -------------------------
-        # Clean column names
-        # -------------------------
-        def clean_columns(df):
-            df.columns = df.columns.str.strip().str.replace('\n',' ').str.replace('\r',' ')
-            return df
+    for idx, wir in candidate_wirs.iterrows():
+        activity_tokens = set(preprocess_text(activity))
+        wir_tokens = set(preprocess_text(wir['Title / Description2']))
+        token_score = len(activity_tokens & wir_tokens)
 
-        wir_df = clean_columns(wir_df)
-        itp_df = clean_columns(itp_df)
-        act_df = clean_columns(act_df)
+        activity_emb = model.encode(activity, convert_to_tensor=True)
+        wir_emb = model.encode(str(wir['Title / Description2']), convert_to_tensor=True)
+        semantic_score = util.cos_sim(activity_emb, wir_emb).item()
 
-        wir_col = [c for c in wir_df.columns if 'Title / Description2' in c][0]
-        itp_col = [c for c in itp_df.columns if 'Title / Description' in c][0]
-        act_itp_col = [c for c in act_df.columns if 'ITP Reference' in c][0]
-        act_desc_col = [c for c in act_df.columns if 'Activiy Description' in c][0]
+        total_score = token_score + semantic_score
 
-        # -------------------------
-        # Normalize
-        # -------------------------
-        wir_df['WIR_Norm'] = wir_df[wir_col].astype(str).str.upper().str.replace("-", "").str.replace(" ", "")
-        itp_df['ITP_Norm'] = itp_df[itp_col].astype(str).str.upper().str.replace("-", "").str.replace(" ", "")
-        act_df['ITP_Ref_Norm'] = act_df[act_itp_col].astype(str).str.upper().str.replace("-", "").str.replace(" ", "")
-        act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.replace("-", "").str.replace(" ", "")
+        if total_score > max_score:
+            max_score = total_score
+            best_match = wir
 
-        # -------------------------
-        # Matching WIR → ITP
-        # -------------------------
-        st.info("Matching WIRs to ITPs...")
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+    return best_match
 
-        results = []
+# -------------------------------
+# Assign Status Code
+# -------------------------------
+def assign_status(wir):
+    if wir is None or pd.isna(wir.get('PM Web Code')):
+        return 0
+    code = str(wir['PM Web Code']).strip().upper()
+    if code in ['A','B']:
+        return 1
+    elif code in ['C','D']:
+        return 2
+    else:
+        return 0
 
-        total_wir = len(wir_df)
-        for idx, wir_row in wir_df.iterrows():
-            best_match_score = 0
-            best_itp_idx = None
-            for jdx, itp_row in itp_df.iterrows():
-                score = fuzz.ratio(wir_row['WIR_Norm'], itp_row['ITP_Norm'])
-                if score > best_match_score:
-                    best_match_score = score
-                    best_itp_idx = jdx
-            if best_match_score >= threshold:
-                matched_itp = itp_df.loc[best_itp_idx, itp_col]
-                # check activities selected
-                activities = act_df[act_df['ITP_Ref_Norm'] == str(itp_df.loc[best_itp_idx, itp_col]).upper().replace("-", "").replace(" ", "")]
-                activities_list = activities[act_desc_col].tolist()
-            else:
-                matched_itp = None
-                activities_list = []
-            results.append({
-                'WIR_Title': wir_row[wir_col],
-                'Matched_ITP': matched_itp,
-                'ITP_Activities': ", ".join(activities_list),
-                'Score': best_match_score
-            })
-            progress_bar.progress((idx + 1) / total_wir)
-            status_text.text(f"Processed {idx + 1}/{total_wir} WIR rows")
+# -------------------------------
+# Streamlit UI
+# -------------------------------
+st.title("📊 ITP-WIR Matching Tool")
 
-        result_df = pd.DataFrame(results)
+st.write("Upload your Excel files for ITP Log, ITP Activities, and Document Control Log (WIR)")
 
-        st.subheader("Matched Results")
-        st.dataframe(result_df)
+# Upload files
+itp_file = st.file_uploader("Upload ITP Log", type=["xlsx"])
+activity_file = st.file_uploader("Upload ITP Activities Log", type=["xlsx"])
+wir_file = st.file_uploader("Upload Document Control Log (WIR)", type=["xlsx"])
 
-        # -------------------------
-        # Save to Excel
-        # -------------------------
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            result_df.to_excel(writer, index=False, sheet_name='MatchedResults')
-        output.seek(0)
+if itp_file and activity_file and wir_file:
+    itp_log = pd.read_excel(itp_file)
+    activity_log = pd.read_excel(activity_file)
+    wir_log = pd.read_excel(wir_file)
 
-        st.download_button(
-            label="Download Excel",
-            data=output.getvalue(),
-            file_name="WIR_ITP_Matched.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    st.success("✅ Files uploaded successfully!")
 
-        st.success("Processing completed!")
+    # Unique activities for columns
+    unique_activities = activity_log['Activity Description'].dropna().unique().tolist()
+    itp_nos = itp_log['DocumentNo.'].unique()
+    matrix = pd.DataFrame(0, index=itp_nos, columns=unique_activities)
+
+    progress = st.progress(0)
+    total = len(itp_nos)
+    
+    for i, itp_no in enumerate(itp_nos):
+        itp_title = itp_log.loc[itp_log['DocumentNo.']==itp_no, 'Title / Description'].values[0]
+        activities = activity_log.loc[activity_log['ITP Reference']==itp_no]
+
+        candidate_wirs = wir_log  # optionally filter by Function here
+
+        for _, activity_row in activities.iterrows():
+            activity_desc = activity_row['Activity Description']
+            best_wir = match_activity_to_wir(activity_desc, candidate_wirs)
+            status_code = assign_status(best_wir)
+            matrix.at[itp_no, activity_desc] = status_code
+
+        progress.progress((i+1)/total)
+
+    matrix.reset_index(inplace=True)
+    matrix.rename(columns={'index':'ITP No.'}, inplace=True)
+
+    st.success("✅ ITP-WIR matrix generated successfully!")
+    st.dataframe(matrix)
+
+    # Download button
+    st.download_button(
+        label="📥 Download Matrix as Excel",
+        data=matrix.to_excel(index=False, engine='openpyxl'),
+        file_name="ITP_WIR_Matrix.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
