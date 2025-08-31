@@ -7,7 +7,6 @@ import pandas as pd
 from rapidfuzz import fuzz
 import re
 import io
-from tqdm import tqdm
 
 st.set_page_config(page_title="WIR → ITP Tracker", layout="wide")
 st.title("WIR → ITP Activity Tracking Tool (Expert Level)")
@@ -26,9 +25,9 @@ threshold = st.slider("Fuzzy Match Threshold (%)", 70, 100, 90)
 # Process Button
 # ------------------------------
 if wir_file and itp_file and activity_file:
-
     if st.button("Start Processing"):
 
+        st.info("Reading Excel files...")
         # ------------------------------
         # Read Excel Files
         # ------------------------------
@@ -37,7 +36,7 @@ if wir_file and itp_file and activity_file:
         act_df = pd.read_excel(activity_file)
 
         # ------------------------------
-        # Normalize Column Names
+        # Normalize Columns (strip spaces/newlines)
         # ------------------------------
         def clean_columns(df):
             df.columns = df.columns.str.strip()
@@ -49,79 +48,73 @@ if wir_file and itp_file and activity_file:
         act_df = clean_columns(act_df)
 
         # ------------------------------
-        # Detect PM Web Code Column Robustly
+        # Detect Required Columns
         # ------------------------------
-        pm_col_candidates = [col for col in wir_df.columns if 'PM' in col.upper() and 'CODE' in col.upper()]
-        if len(pm_col_candidates) == 0:
-            st.error("Cannot find PM Web Code column in WIR log!")
-            st.stop()
-        wir_df['PM Web Code'] = wir_df[pm_col_candidates[0]]
 
-        # ------------------------------
-        # Normalize Text Columns
-        # ------------------------------
-        def normalize_text(x):
-            return str(x).upper().strip().replace("-", "").replace(" ", "")
+        # WIR Log
+        wir_pm_col = [c for c in wir_df.columns if 'PM Web Code' in c][0]
+        wir_title_col = [c for c in wir_df.columns if 'Title / Description2' in c][0]
 
-        wir_df['TitleNorm'] = wir_df['Title / Description2'].astype(str).apply(normalize_text)
-        wir_df['ProjectNorm'] = wir_df['Project Name'].astype(str).apply(normalize_text)
-        wir_df['DisciplineNorm'] = wir_df['Discipline'].astype(str).apply(normalize_text)
-        wir_df['PhaseNorm'] = wir_df['Phase'].astype(str).apply(normalize_text)
+        wir_df['PM Web Code'] = wir_df[wir_pm_col]
+        wir_df['TitleNorm'] = wir_df[wir_title_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
         wir_df['PM_Code_Num'] = wir_df['PM Web Code'].map(lambda x: 1 if str(x).upper() in ['A','B'] else 2 if str(x).upper() in ['C','D'] else 0)
 
-        itp_df['ITP_Ref_Norm'] = itp_df['ITP Reference'].astype(str).apply(normalize_text)
-        act_df['ITP_Ref_Norm'] = act_df['ITP Reference'].astype(str).apply(normalize_text)
-        act_df['ActivityDescNorm'] = act_df['Activity Description'].astype(str).apply(normalize_text)
+        # ITP Activities Log
+        act_itp_col = [c for c in act_df.columns if 'ITP Reference' in c][0]
+        act_desc_col = [c for c in act_df.columns if 'Activiy Description' in c][0]
+
+        act_df['ITP_Ref_Norm'] = act_df[act_itp_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
+        act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
 
         # ------------------------------
         # Split Multi-Activity WIR Titles
         # ------------------------------
         def split_activities(title):
-            parts = re.split(r',|\+|/| and |&', title.upper())
+            parts = re.split(r',|\+|/| and |&', title)
             return [p.strip() for p in parts if p.strip() != '']
 
+        st.info("Expanding multi-activity WIR titles...")
         wir_expanded = []
         progress_bar = st.progress(0)
         status_text = st.empty()
 
         for idx, row in wir_df.iterrows():
-            activities = split_activities(row['Title / Description2'])
+            activities = split_activities(row[wir_title_col])
             for act in activities:
                 new_row = row.copy()
                 new_row['SingleActivity'] = act
+                new_row['ActivityNorm'] = str(act).upper().strip().replace("-", "").replace(" ", "")
                 wir_expanded.append(new_row)
             progress_bar.progress((idx+1)/len(wir_df))
             status_text.text(f"Splitting WIR activities: {idx+1}/{len(wir_df)} rows processed")
 
         wir_exp_df = pd.DataFrame(wir_expanded)
-        wir_exp_df['ActivityNorm'] = wir_exp_df['SingleActivity'].astype(str).apply(normalize_text)
 
         # ------------------------------
         # Match WIR → ITP Activities
         # ------------------------------
+        st.info("Matching WIRs to ITP activities...")
         matches = []
         progress_bar = st.progress(0)
         status_text = st.empty()
 
         for idx, act_row in act_df.iterrows():
-            itp_ref = act_row['ITP_Ref_Norm']
             activity_desc = act_row['ActivityDescNorm']
-
             candidate_wirs = wir_exp_df
-
             matched_pm_code = 0
 
-            for widx, wir_row in candidate_wirs.iterrows():
-                title_score = fuzz.ratio(activity_desc, wir_row['ActivityNorm'])
-                if title_score >= threshold:
+            for _, wir_row in candidate_wirs.iterrows():
+                score = fuzz.ratio(activity_desc, wir_row['ActivityNorm'])
+                if score >= threshold:
                     if wir_row['PM_Code_Num'] > matched_pm_code:
                         matched_pm_code = wir_row['PM_Code_Num']
 
             matches.append({
-                'ITP Reference': act_row['ITP Reference'],
-                'Activity Description': act_row['Activity Description'],
+                'ITP Reference': act_row[act_itp_col],
+                'Activity Description': act_row[act_desc_col],
                 'Status': matched_pm_code
             })
+
             progress_bar.progress((idx+1)/len(act_df))
             status_text.text(f"Matching WIRs to activities: {idx+1}/{len(act_df)} activities processed")
 
