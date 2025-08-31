@@ -38,7 +38,7 @@ if wir_file and itp_file and activity_file:
         # ------------------------------
         def clean_columns(df):
             df.columns = df.columns.str.strip()
-            df.columns = df.columns.str.replace('\n',' ', regex=False).str.replace('\r',' ', regex=False)
+            df.columns = df.columns.str.replace('\n',' ').str.replace('\r',' ')
             return df
 
         wir_df = clean_columns(wir_df)
@@ -63,14 +63,14 @@ if wir_file and itp_file and activity_file:
         st.info("Expanding multi-activity WIR titles (vectorized)...")
         wir_df['ActivitiesList'] = wir_df[wir_title_col].astype(str).str.split(r',|\+|/| and |&')
         wir_exp_df = wir_df.explode('ActivitiesList').reset_index(drop=True)
-        wir_exp_df['ActivityNorm'] = wir_exp_df['ActivitiesList'].astype(str).str.upper().str.strip().str.replace("-", "", regex=False).str.replace(" ", "", regex=False)
+        wir_exp_df['ActivityNorm'] = wir_exp_df['ActivitiesList'].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
         st.success(f"Expanded WIR activities: {len(wir_exp_df)} rows total")
 
         # ------------------------------
         # Normalize ITP Activities
         # ------------------------------
-        act_df['ITP_Ref_Norm'] = act_df[act_itp_col].astype(str).str.upper().str.strip().str.replace("-", "", regex=False).str.replace(" ", "", regex=False)
-        act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.strip().str.replace("-", "", regex=False).str.replace(" ", "", regex=False)
+        act_df['ITP_Ref_Norm'] = act_df[act_itp_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
+        act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
 
         # ------------------------------
         # Vectorized Matching using RapidFuzz cdist
