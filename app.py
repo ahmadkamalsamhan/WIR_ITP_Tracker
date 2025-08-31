@@ -1,17 +1,14 @@
 # ------------------------------
-# Ultra High-Performance WIR → ITP Tracker
-# Vectorized Matching with RapidFuzz cdist
+# WIR → ITP Tracker (Pure Python Fuzzy Matching)
 # ------------------------------
 
 import streamlit as st
 import pandas as pd
-from rapidfuzz import fuzz, cdist
-import io
 import numpy as np
-from rapidfuzz import fuzz, cdist
+import io
 
-st.set_page_config(page_title="Ultra High-Performance WIR → ITP Tracker", layout="wide")
-st.title("WIR → ITP Activity Tracking Tool (Ultra High Performance)")
+st.set_page_config(page_title="WIR → ITP Tracker", layout="wide")
+st.title("WIR → ITP Activity Tracking Tool (Pure Python)")
 
 # ------------------------------
 # Upload Excel Files
@@ -61,7 +58,7 @@ if wir_file and itp_file and activity_file:
         wir_df['PM Web Code'] = wir_df[wir_pm_col]
         wir_df['PM_Code_Num'] = wir_df['PM Web Code'].map(lambda x: 1 if str(x).upper() in ['A','B'] else 2 if str(x).upper() in ['C','D'] else 0)
 
-        st.info("Expanding multi-activity WIR titles (vectorized)...")
+        st.info("Expanding multi-activity WIR titles...")
         wir_df['ActivitiesList'] = wir_df[wir_title_col].astype(str).str.split(r',|\+|/| and |&')
         wir_exp_df = wir_df.explode('ActivitiesList').reset_index(drop=True)
         wir_exp_df['ActivityNorm'] = wir_exp_df['ActivitiesList'].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
@@ -74,32 +71,49 @@ if wir_file and itp_file and activity_file:
         act_df['ActivityDescNorm'] = act_df[act_desc_col].astype(str).str.upper().str.strip().str.replace("-", "").str.replace(" ", "")
 
         # ------------------------------
-        # Vectorized Matching using RapidFuzz cdist
+        # Pure Python Fuzzy Matching
         # ------------------------------
-        st.info("Matching WIRs to ITP activities (vectorized)...")
+        st.info("Matching WIRs to ITP activities...")
         progress_bar = st.progress(0)
         status_text = st.empty()
+
+        def similarity_ratio(a, b):
+            # simple character-based ratio
+            a, b = str(a), str(b)
+            matches = sum(c1 == c2 for c1, c2 in zip(a, b))
+            max_len = max(len(a), len(b))
+            return int(matches / max_len * 100) if max_len > 0 else 0
 
         wir_list = wir_exp_df['ActivityNorm'].tolist()
         wir_pm_list = wir_exp_df['PM_Code_Num'].tolist()
         itp_list = act_df['ActivityDescNorm'].tolist()
 
-        # Compute similarity matrix (all ITP vs all WIR)
-        sim_matrix = cdist(itp_list, wir_list, scorer=fuzz.ratio)
+        best_idx = []
+        best_score = []
 
-        # Best match per ITP
-        best_idx = np.argmax(sim_matrix, axis=1)
-        best_score = np.max(sim_matrix, axis=1)
-        pm_codes = [wir_pm_list[i] if s >= threshold else 0 for i,s in zip(best_idx, best_score)]
+        for idx_itp, itp_act in enumerate(itp_list):
+            scores = [similarity_ratio(itp_act, wir_act) for wir_act in wir_list]
+            best_score_val = max(scores)
+            best_idx_val = scores.index(best_score_val)
+            best_score.append(best_score_val)
+            best_idx.append(best_idx_val)
+            if idx_itp % 50 == 0:
+                progress_bar.progress(idx_itp / len(itp_list))
 
-        # Build matches DataFrame
+        pm_codes = [wir_pm_list[i] if s >= threshold else 0 for i, s in zip(best_idx, best_score)]
+
+        # ------------------------------
+        # Build Matches DataFrame
+        # ------------------------------
         match_df = pd.DataFrame({
             'ITP Reference': act_df[act_itp_col],
             'Activity Description': act_df[act_desc_col],
             'Status': pm_codes
         })
 
-        # Build audit DataFrame for low-confidence matches
+        # ------------------------------
+        # Audit for Low Confidence Matches
+        # ------------------------------
         audit_df = pd.DataFrame({
             'ITP Reference': act_df[act_itp_col],
             'Activity Description': act_df[act_desc_col],
