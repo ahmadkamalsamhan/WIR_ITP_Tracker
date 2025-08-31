@@ -1,42 +1,60 @@
 # ------------------------------
-# 1. Install required packages
+# WIR → ITP Activity Tracking App
 # ------------------------------
-# pip install streamlit pandas openpyxl rapidfuzz tqdm
 
 import streamlit as st
 import pandas as pd
 from rapidfuzz import fuzz
 import re
-from tqdm import tqdm
 import io
+from tqdm import tqdm
 
-# ------------------------------
-# 2. Streamlit App Layout
-# ------------------------------
-st.set_page_config(page_title="WIR → ITP Activity Tracker", layout="wide")
+st.set_page_config(page_title="WIR → ITP Tracker", layout="wide")
 st.title("WIR → ITP Activity Tracking Tool (Expert Level)")
 
 # ------------------------------
-# 3. File Uploads
+# Sidebar: File Uploads + Threshold
 # ------------------------------
 st.sidebar.header("Upload Excel Files")
 wir_file = st.sidebar.file_uploader("Upload WIR Log", type=["xlsx"])
 itp_file = st.sidebar.file_uploader("Upload ITP Log", type=["xlsx"])
 activity_file = st.sidebar.file_uploader("Upload ITP Activities Log", type=["xlsx"])
-
 threshold = st.sidebar.slider("Fuzzy Match Threshold (%)", 70, 100, 90)
 
 if wir_file and itp_file and activity_file:
 
     # ------------------------------
-    # 4. Read Excel Files
+    # Read Excel Files
     # ------------------------------
     wir_df = pd.read_excel(wir_file)
     itp_df = pd.read_excel(itp_file)
     act_df = pd.read_excel(activity_file)
 
     # ------------------------------
-    # 5. Data Normalization
+    # Normalize Column Names (strip spaces/newlines)
+    # ------------------------------
+    def clean_columns(df):
+        df.columns = df.columns.str.strip()
+        df.columns = df.columns.str.replace('\n',' ').str.replace('\r',' ')
+        return df
+
+    wir_df = clean_columns(wir_df)
+    itp_df = clean_columns(itp_df)
+    act_df = clean_columns(act_df)
+
+    st.write("Columns in WIR Log:", wir_df.columns.tolist())
+
+    # ------------------------------
+    # Detect PM Web Code Column Robustly
+    # ------------------------------
+    pm_col_candidates = [col for col in wir_df.columns if 'PM' in col.upper() and 'CODE' in col.upper()]
+    if len(pm_col_candidates) == 0:
+        st.error("Cannot find PM Web Code column in WIR log!")
+        st.stop()
+    wir_df['PM Web Code'] = wir_df[pm_col_candidates[0]]
+
+    # ------------------------------
+    # Normalize Text Columns
     # ------------------------------
     def normalize_text(x):
         return str(x).upper().strip().replace("-", "").replace(" ", "")
@@ -52,7 +70,7 @@ if wir_file and itp_file and activity_file:
     act_df['ActivityDescNorm'] = act_df['Activity Description'].astype(str).apply(normalize_text)
 
     # ------------------------------
-    # 6. Split Multi-Activity WIR Titles
+    # Split Multi-Activity WIR Titles
     # ------------------------------
     def split_activities(title):
         parts = re.split(r',|\+|/| and |&', title.upper())
@@ -70,26 +88,21 @@ if wir_file and itp_file and activity_file:
     wir_exp_df['ActivityNorm'] = wir_exp_df['SingleActivity'].astype(str).apply(normalize_text)
 
     # ------------------------------
-    # 7. Matching WIR → ITP Activities
+    # Match WIR → ITP Activities
     # ------------------------------
     matches = []
     for idx, act_row in tqdm(act_df.iterrows(), total=len(act_df), desc="Matching WIRs to Activities"):
         itp_ref = act_row['ITP_Ref_Norm']
         activity_desc = act_row['ActivityDescNorm']
 
-        # Filter WIRs for the same ITP (Transmittal/Document matching can also be added)
-        candidate_wirs = wir_exp_df
+        candidate_wirs = wir_exp_df  # could filter by project/discipline/etc for better accuracy
 
-        best_match_score = 0
         matched_pm_code = 0
 
         for widx, wir_row in candidate_wirs.iterrows():
             title_score = fuzz.ratio(activity_desc, wir_row['ActivityNorm'])
-            # Optional: add weights for project, discipline, phase
-            project_match = 1 if wir_row['ProjectNorm'] == normalize_text(itp_df.loc[itp_df['ITP_Ref_Norm']==itp_ref,'Title / Description'].values[0]) else 0
-            # Weighted score (simplified here)
-            score = title_score
-            if score >= threshold:
+            if title_score >= threshold:
+                # pick highest PM Code
                 if wir_row['PM_Code_Num'] > matched_pm_code:
                     matched_pm_code = wir_row['PM_Code_Num']
 
@@ -102,21 +115,27 @@ if wir_file and itp_file and activity_file:
     match_df = pd.DataFrame(matches)
 
     # ------------------------------
-    # 8. Pivot Table
+    # Pivot Table
     # ------------------------------
-    pivot_df = match_df.pivot_table(index='ITP Reference', columns='Activity Description', values='Status', fill_value=0).reset_index()
+    pivot_df = match_df.pivot_table(index='ITP Reference',
+                                    columns='Activity Description',
+                                    values='Status',
+                                    fill_value=0).reset_index()
 
     st.subheader("Activity Completion Status Pivot Table")
     st.dataframe(pivot_df)
 
     # ------------------------------
-    # 9. Download Result
+    # Excel Output
     # ------------------------------
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         pivot_df.to_excel(writer, index=False, sheet_name='PivotedStatus')
-        writer.save()
-        processed_data = output.getvalue()
+    output.seek(0)
 
-    st.download_button(label="Download Excel", data=processed_data, file_name="ITP_WIR_Activity_Status.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
+    st.download_button(
+        label="Download Excel",
+        data=output.getvalue(),
+        file_name="ITP_WIR_Activity_Status.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
