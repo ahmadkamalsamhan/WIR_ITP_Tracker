@@ -1,7 +1,13 @@
+# ===============================
+# ITP-WIR Matching Tool (Interactive Columns)
+# ===============================
+
 import streamlit as st
 import pandas as pd
 import re
 from sentence_transformers import SentenceTransformer, util
+
+st.title("📊 ITP-WIR Matching Tool (Online)")
 
 # -------------------------------
 # Load Sentence Transformer
@@ -25,17 +31,17 @@ def preprocess_text(text):
 # -------------------------------
 # Match activity to WIR
 # -------------------------------
-def match_activity_to_wir(activity, candidate_wirs):
+def match_activity_to_wir(activity, candidate_wirs, wir_title_col):
     best_match = None
     max_score = -1
 
     for idx, wir in candidate_wirs.iterrows():
         activity_tokens = set(preprocess_text(activity))
-        wir_tokens = set(preprocess_text(wir['Title / Description2']))
+        wir_tokens = set(preprocess_text(wir[wir_title_col]))
         token_score = len(activity_tokens & wir_tokens)
 
         activity_emb = model.encode(activity, convert_to_tensor=True)
-        wir_emb = model.encode(str(wir['Title / Description2']), convert_to_tensor=True)
+        wir_emb = model.encode(str(wir[wir_title_col]), convert_to_tensor=True)
         semantic_score = util.cos_sim(activity_emb, wir_emb).item()
 
         total_score = token_score + semantic_score
@@ -47,12 +53,12 @@ def match_activity_to_wir(activity, candidate_wirs):
     return best_match
 
 # -------------------------------
-# Assign status
+# Assign Status Code
 # -------------------------------
-def assign_status(wir):
-    if wir is None or pd.isna(wir.get('PM Web Code')):
+def assign_status(wir, wir_pm_col):
+    if wir is None or pd.isna(wir.get(wir_pm_col)):
         return 0
-    code = str(wir['PM Web Code']).strip().upper()
+    code = str(wir[wir_pm_col]).strip().upper()
     if code in ['A','B']:
         return 1
     elif code in ['C','D']:
@@ -61,12 +67,9 @@ def assign_status(wir):
         return 0
 
 # -------------------------------
-# Streamlit UI
+# Upload Files
 # -------------------------------
-st.title("📊 ITP-WIR Matching Tool (Online)")
-
-st.write("Upload your Excel files for ITP Log, ITP Activities, and Document Control Log (WIR)")
-
+st.header("Step 1: Upload Excel Files")
 itp_file = st.file_uploader("Upload ITP Log", type=["xlsx"])
 activity_file = st.file_uploader("Upload ITP Activities Log", type=["xlsx"])
 wir_file = st.file_uploader("Upload Document Control Log (WIR)", type=["xlsx"])
@@ -78,35 +81,71 @@ if itp_file and activity_file and wir_file:
 
     st.success("✅ Files uploaded successfully!")
 
-    unique_activities = activity_log['Activity Description'].dropna().unique().tolist()
-    itp_nos = itp_log['DocumentNo.'].unique()
-    matrix = pd.DataFrame(0, index=itp_nos, columns=unique_activities)
+    # -------------------------------
+    # Column Selection for Each File
+    # -------------------------------
+    st.header("Step 2: Select Columns")
 
-    progress = st.progress(0)
-    total = len(itp_nos)
+    # ITP Log
+    st.subheader("ITP Log Columns")
+    st.write(itp_log.columns.tolist())
+    itp_no_col = st.selectbox("Select column for ITP No.", options=itp_log.columns.tolist())
+    itp_title_col = st.selectbox("Select column for ITP Title", options=itp_log.columns.tolist())
 
-    for i, itp_no in enumerate(itp_nos):
-        itp_title = itp_log.loc[itp_log['DocumentNo.']==itp_no, 'Title / Description'].values[0]
-        activities = activity_log.loc[activity_log['ITP Reference']==itp_no]
-        candidate_wirs = wir_log  # optionally filter by Function
+    # Activity Log
+    st.subheader("ITP Activity Log Columns")
+    st.write(activity_log.columns.tolist())
+    activity_desc_col = st.selectbox("Select column for Activity Description", options=activity_log.columns.tolist())
+    itp_ref_col = st.selectbox("Select column for ITP Reference", options=activity_log.columns.tolist())
+    activity_no_col = st.selectbox("Select column for Activity No.", options=activity_log.columns.tolist())
 
-        for _, activity_row in activities.iterrows():
-            activity_desc = activity_row['Activity Description']
-            best_wir = match_activity_to_wir(activity_desc, candidate_wirs)
-            status_code = assign_status(best_wir)
-            matrix.at[itp_no, activity_desc] = status_code
+    # WIR Log
+    st.subheader("WIR Log Columns")
+    st.write(wir_log.columns.tolist())
+    wir_title_col = st.selectbox("Select column for WIR Title", options=wir_log.columns.tolist())
+    wir_func_col = st.selectbox("Select column for Function", options=wir_log.columns.tolist())
+    wir_pm_col = st.selectbox("Select column for PM Web Code", options=wir_log.columns.tolist())
 
-        progress.progress((i+1)/total)
+    st.header("Step 3: Generate Matrix")
 
-    matrix.reset_index(inplace=True)
-    matrix.rename(columns={'index':'ITP No.'}, inplace=True)
+    if st.button("Generate ITP-WIR Matrix"):
+        st.info("Processing... This may take a few minutes depending on the file size.")
 
-    st.success("✅ ITP-WIR matrix generated!")
-    st.dataframe(matrix)
+        # Extract unique activities
+        unique_activities = activity_log[activity_desc_col].dropna().unique().tolist()
+        itp_nos = itp_log[itp_no_col].unique()
+        matrix = pd.DataFrame(0, index=itp_nos, columns=unique_activities)
 
-    st.download_button(
-        label="📥 Download Excel Matrix",
-        data=matrix.to_excel(index=False, engine='openpyxl'),
-        file_name="ITP_WIR_Matrix.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        progress = st.progress(0)
+        total = len(itp_nos)
+
+        for i, itp_no in enumerate(itp_nos):
+            itp_row = itp_log[itp_log[itp_no_col]==itp_no].iloc[0]
+            itp_title = itp_row[itp_title_col]
+
+            # Get activities for this ITP
+            activities = activity_log[activity_log[itp_ref_col]==itp_no]
+
+            # Candidate WIRs (optionally, can filter by Function later)
+            candidate_wirs = wir_log
+
+            for _, activity_row in activities.iterrows():
+                activity_desc = activity_row[activity_desc_col]
+                best_wir = match_activity_to_wir(activity_desc, candidate_wirs, wir_title_col)
+                status_code = assign_status(best_wir, wir_pm_col)
+                matrix.at[itp_no, activity_desc] = status_code
+
+            progress.progress((i+1)/total)
+
+        matrix.reset_index(inplace=True)
+        matrix.rename(columns={'index':'ITP No.'}, inplace=True)
+
+        st.success("✅ ITP-WIR Matrix Generated!")
+        st.dataframe(matrix)
+
+        st.download_button(
+            label="📥 Download Matrix as Excel",
+            data=matrix.to_excel(index=False, engine='openpyxl'),
+            file_name="ITP_WIR_Matrix.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
